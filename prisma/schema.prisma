@@ -1,0 +1,144 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+// Looking for ways to speed up your queries, or scale easily with your serverless or edge functions?
+// Try Prisma Accelerate: https://pris.ly/cli/accelerate-init
+
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// ===================================
+// A. MULTI-TENANCY CORE
+// ===================================
+
+enum Role {
+  OPERATOR      // Hanya bisa membuat panggilan
+  PERSONNEL     // Bisa merespons panggilan (di divisi tertentu)
+  ADMIN_TENANT  // Bisa mengkonfigurasi mesin, divisi, dan pengguna
+  SUPER_ADMIN   // Akses level sistem (Hanya Anda)
+}
+
+// Model Tenant: Data utama untuk setiap perusahaan
+model Tenant {
+  id                    String      @id @default(cuid())
+  name                  String      // Nama Tampilan (PT ABC)
+  slug                  String      @unique // Slug URL yang aman (pt-abc)
+
+  // Batasan Penggunaan (Dari paket langganan)
+  maxDivisions          Int
+  maxMachines           Int
+  isTrialing            Boolean     @default(true)
+  isActive              Boolean     @default(true)
+  
+  createdAt             DateTime    @default(now())
+  updatedAt             DateTime    @updatedAt
+
+  users                 User[]
+  divisions             Division[]
+  machines              Machine[]
+  calls                 Call[]
+  factoryLayout         FactoryLayout?
+}
+
+// Model User: Dihubungkan ke NextAuth dan Tenant
+model User {
+  id                    String      @id @default(cuid())
+  name                  String?
+  email                 String      @unique
+  role                  Role        @default(OPERATOR) // Role pengguna di dalam Tenant
+  
+  tenantId              String?     // Kunci asing ke Tenant
+  tenant                Tenant?     @relation(fields: [tenantId], references: [id])
+  
+  // Otorisasi tambahan untuk Personnel: ke divisi mana mereka terikat
+  divisionId            String?
+  
+  createdAt             DateTime    @default(now())
+  updatedAt             DateTime    @updatedAt
+}
+
+// ===================================
+// B. DATA PRODUKSI (ANDON LOGIC)
+// ===================================
+
+// Model Division: Divisi yang merespons panggilan (misal: Mekanik, Material)
+model Division {
+  id                    String      @id @default(cuid())
+  tenantId              String
+  name                  String
+  
+  // Tahapan respons yang dapat dikonfigurasi (misalnya: ["Called", "OnSite", "Resolved"])
+  steps                 String[]    @default(["Called", "Processed", "Resolved"])
+
+  tenant                Tenant      @relation(fields: [tenantId], references: [id])
+  machines              Machine[]
+}
+
+// Model Machine: Mesin atau Area Kerja yang memanggil Andon
+model Machine {
+  id                    String      @id @default(cuid())
+  tenantId              String
+  divisionId            String?     // Divisi yang bertanggung jawab secara default
+  name                  String      // Nama Mesin (CNC-01)
+  
+  // Koordinat Layout (untuk fitur peta interaktif)
+  layoutX               Float? 
+  layoutY               Float?
+
+  tenant                Tenant      @relation(fields: [tenantId], references: [id])
+  division              Division?   @relation(fields: [divisionId], references: [id])
+  calls                 Call[]
+}
+
+// Model Call: Panggilan Andon yang Sedang Aktif/Selesai
+model Call {
+  id                    String        @id @default(cuid())
+  tenantId              String
+  machineId             String
+  divisionId            String?       // Divisi yang dipanggil
+  
+  // Status saat ini (misal: "Called", "Processed", "Resolved")
+  currentStatus         String        @default("Called") 
+  isResolved            Boolean       @default(false)
+
+  // Waktu Kunci
+  calledAt              DateTime      @default(now())
+  resolvedAt            DateTime?
+
+  tenant                Tenant        @relation(fields: [tenantId], references: [id])
+  machine               Machine       @relation(fields: [machineId], references: [id])
+  history               CallHistory[]
+}
+
+// Model CallHistory: Log langkah-langkah (untuk Audit dan Analitik Waktu)
+model CallHistory {
+  id                    String      @id @default(cuid())
+  callId                String
+  stepName              String      // Status yang dicapai (misal: "Processed")
+  
+  personnelName         String?     // Siapa yang merespons
+  reportDescription     String?     // Apa yang dilakukan atau penyebabnya
+
+  timestamp             DateTime    @default(now())
+  
+  call                  Call        @relation(fields: [callId], references: [id])
+}
+
+// ===================================
+// C. FITUR TAMBAHAN (Layout Interaktif)
+// ===================================
+model FactoryLayout {
+  id               String   @id @default(cuid())
+  tenantId         String   @unique 
+  imageUrl         String   // URL gambar dari Vercel Blob
+  originalWidth    Int      
+  originalHeight   Int      
+  
+  tenant Tenant @relation(fields: [tenantId], references: [id])
+}
